@@ -39,3 +39,17 @@
 
 # debug information files
 *.dwo
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# CodeQL
+_codeql_detected_source_root
+
+# Android build outputs
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
