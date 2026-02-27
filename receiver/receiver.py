@@ -171,7 +171,18 @@ def main() -> None:
     print("Connected")
 
     # Read stream header
-    hdr = recv_exact(sock, HEADER_SIZE)
+    try:
+        hdr = recv_exact(sock, HEADER_SIZE)
+    except EOFError:
+        sys.exit(
+            "Connected, but remote closed before sending stream header.\n"
+            "This usually means the Android app is not actively streaming.\n"
+            "Checks:\n"
+            "  1) Launch the app and keep it in foreground once to start capture\n"
+            "  2) Grant camera permission: adb shell pm grant com.droidhose android.permission.CAMERA\n"
+            "  3) Verify logs: adb logcat -s droidhose\n"
+            "  4) Verify port forward: adb forward --list"
+        )
     if hdr[:4] != HEADER_MAGIC:
         sys.exit("Bad magic: %r (expected %r)" % (hdr[:4], HEADER_MAGIC))
 

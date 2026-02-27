@@ -1,179 +1,67 @@
 # droidhose
 
-Raw, ultra-low-latency video pipe from an Android phone to a Linux PC.
+Raw, ultra-low-latency video pipe from an Android phone to a Linux PC via NDK C++.
 
-Achieves **~20 ms glass-to-glass latency** by bypassing Android's hardware
-encoder entirely: the camera ISP hands off raw **YUV_420_888** frames
-directly into a TCP socket over a USB 3 ADB tunnel.  The Linux side writes
-those frames straight into a **v4l2loopback** device so any V4L2 application
-(OpenTrack, OBS, ffplay …) sees the phone as a regular webcam.
+## The Mission
+Achieve the absolute minimum "Glass-to-Glass" latency by bypassing the Android MediaCodec stack entirely. Raw **YUV_420_888** frames are pulled from the **Native Camera2 NDK** and pushed directly into a TCP socket over an ADB tunnel.
 
----
+## Architecture (High Performance)
+To eliminate "Jitter" and "Buffer Bloat," this project uses a decoupled **Zero-Copy Producer-Consumer** model:
 
-## Architecture
+1.  **Camera Thread (Producer)**: Non-blocking. Performs a fast memory copy of YUV planes to a shared "mailbox" buffer and immediately returns.
+2.  **Sender Thread (Consumer)**: Dedicated to network I/O. Uses a 3-buffer pointer swap to ensure it always sends the *absolute latest* frame, effectively dropping intermediate frames if the network is busy.
+3.  **No RGB Conversion**: Text overlays are baked directly into the Y (Luminance) plane using a custom 5x7 alphanumeric font in C++, avoiding the massive 50ms+ penalty of ARGB conversion and Android Canvas.
 
-```
-┌─────────────────────────────────────────────────────┐
-│  Android (NDK C++)                                  │
-│                                                     │
-│  Camera ISP  ──►  AImageReader (YUV_420_888)        │
-│                        │ image callback              │
-│                        ▼                            │
-│               pack to I420 in RAM                   │
-│                        │                            │
-│                        ▼                            │
-│               TCP socket :8080                      │
-└─────────────────────────────────────────────────────┘
-              │  USB 3.x (5 Gbps)  │
-              │  adb forward       │
-┌─────────────▼─────────────────────────────────────┐
-│  Linux (Python)                                   │
-│                                                   │
-│  localhost:8080  ──►  /dev/video2 (v4l2loopback)  │
-└───────────────────────────────────────────────────┘
-```
+## Latency Isolation & Findings
+This project includes built-in diagnostic tools to isolate where time is being lost:
 
-**Latency breakdown** (640×480 @ 60 fps over USB 3.0):
+### On-Screen Display (OSD)
+*   **ISP (ms)**: The absolute hardware processing delay. Calculated as the delta between the hardware sensor timestamp (light hitting the lens) and the moment the software receives the bytes.
+    *   *Finding*: On the LG V30, this is a fixed **52ms–62ms**, representing the hardware's internal pipelining.
+*   **P (Ping ID)**: Displays the latest ID received from the PC on Port 8081.
 
-| Step                    | Time  |
-|-------------------------|-------|
-| Sensor → RAM (ISP)      | ~10 ms |
-| RAM → TCP socket (C++)  | ~2 ms  |
-| USB 3.0 ADB transfer    | ~2 ms  |
-| Socket → v4l2loopback   | ~2 ms  |
-| **Total**               | **~16–20 ms** |
+### Real-world Performance (LG V30)
+Despite a 5ms network RTT and 60ms ISP delay, total "Glass-to-Glass" latency often plateaus at **~150ms**. Our research indicates this is due to deep-seated "HAL Pipelining" within certain Android vendor drivers that cannot be bypassed via public APIs.
 
 ---
 
-## Building the Android app
+## Setup & Usage
 
-### Requirements
-
-* Android Studio Hedgehog (2023.1) or newer
-* Android NDK **r25c** or newer (install via SDK Manager → SDK Tools → NDK)
-* A physical Android device running API 26+ (Android 8.0+)
-* USB debugging enabled on the device
-
-### Steps
-
-1. Open the `android/` directory as an Android Studio project
-   (`File → Open → select the android/ folder`).
-
-2. Sync Gradle (Android Studio will prompt automatically).
-
-3. Build and install:
-   ```bash
-   # From the android/ directory
-   ./gradlew installDebug
-   ```
-   Or use the **Run** button in Android Studio.
-
-4. Grant the CAMERA permission (required once):
-   ```bash
-   adb shell pm grant com.droidhose android.permission.CAMERA
-   ```
-
-5. Launch the app from the phone's launcher (it shows a blank screen —
-   all work happens natively in the background).  You should see in logcat:
-   ```
-   droidhose: TCP server listening on :8080
-   droidhose: Capture session active – streaming 640x480 I420 on :8080
-   ```
-
----
-
-## Setting up the Linux side
-
-### 1. Load v4l2loopback (once per boot)
-
+### 1. Build and Install
 ```bash
-sudo modprobe v4l2loopback devices=1 video_nr=2 \
-    card_label=droidhose exclusive_caps=1
+cd android
+./gradlew installDebug
+adb shell pm grant com.droidhose android.permission.CAMERA
 ```
 
-To make it permanent, add to `/etc/modules-load.d/v4l2loopback.conf`:
-```
-v4l2loopback
-```
-And to `/etc/modprobe.d/v4l2loopback.conf`:
-```
-options v4l2loopback devices=1 video_nr=2 card_label=droidhose exclusive_caps=1
-```
-
-### 2. Forward the ADB port
-
+### 2. Forward Ports
 ```bash
+# Port 8080: Raw I420 Video Stream
 adb forward tcp:8080 tcp:8080
+# Port 8081: Latency Ping/Echo Port
+adb forward tcp:8081 tcp:8081
 ```
 
-### 3. Run the receiver
-
+### 3. Run Receiver
 ```bash
-python3 receiver/receiver.py
-# Optional flags:
-#   --host localhost   (default)
-#   --port 8080        (default)
-#   --device /dev/video2  (default)
+python3 receiver/receiver.py --device /dev/video2
 ```
 
-### 4. Verify
-
-```bash
-ffplay -f v4l2 /dev/video2
-# or
-v4l2-ctl --list-devices
-```
+### 4. Precision Latency Test
+To measure the exact software + network overhead:
+1. Send an 8-byte `int64` timestamp to `localhost:8081`.
+2. The Android app will update the `P:` OSD value.
+3. Observe how many milliseconds it takes for the video frame showing that ID to arrive on your PC.
 
 ---
 
-## Wire protocol
+## Technical Details
 
-The sender (Android) emits a **12-byte header** once per connection:
+### Wire Protocol (Port 8080)
+1.  **Handshake**: A 12-byte header (`DHDR` + `uint32_t width` + `uint32_t height`).
+2.  **Continuous Stream**: Raw, unframed I420 bytes (`W * H * 1.5`).
 
-| Offset | Size | Description                  |
-|--------|------|------------------------------|
-| 0      | 4    | Magic `DHDR` (ASCII)         |
-| 4      | 4    | Frame width  (uint32_t LE)   |
-| 8      | 4    | Frame height (uint32_t LE)   |
-
-Followed by a continuous stream of unframed **I420** (planar YUV 4:2:0) data:
-
-```
-Y plane : width × height bytes
-U plane : (width/2) × (height/2) bytes
-V plane : (width/2) × (height/2) bytes
-```
-
-No per-frame size headers are needed because the frame size is fixed once the
-header has been read.
-
----
-
-## Adjusting resolution / frame rate
-
-Edit the constants at the top of
-`android/app/src/main/cpp/camera_stream.cpp`:
-
-```c
-#define SERVER_PORT   8080
-#define FRAME_W       640
-#define FRAME_H       480
-#define MAX_IMAGES    4     // AImageReader queue depth
-```
-
-Verify your device supports the chosen resolution in YUV_420_888 mode:
-```bash
-adb shell dumpsys media.camera | grep -A5 "JPEG\|YUV"
-```
-
----
-
-## Bandwidth guide
-
-| Resolution | FPS | Raw YUV bandwidth |
-|------------|-----|-------------------|
-| 640×480    | 60  | ~220 Mbps         |
-| 1280×720   | 30  | ~330 Mbps         |
-| 1920×1080  | 30  | ~746 Mbps         |
-
-All comfortably within USB 3.x (5 Gbps) capacity over ADB.
+### Latency Tips
+*   **Use USB 3.0**: ADB performance is significantly better.
+*   **CPU Priority**: The Sender thread uses `setpriority(PRIO_PROCESS, 0, -10)` to preempt background tasks.
+*   **TCP_NODELAY**: Enabled on all sockets to disable Nagle's algorithm.
