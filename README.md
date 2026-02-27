@@ -53,6 +53,14 @@ To measure the exact software + network overhead:
 2. The Android app will update the `P:` OSD value.
 3. Observe how many milliseconds it takes for the video frame showing that ID to arrive on your PC.
 
+
+### 5. 'Infinite Mirror' total latency
+```
+ffplay -f v4l2 -video_size 640x480 -i /dev/video2   -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%H\\\\\:%M\\\\\:%S.%N}':x=10:y=40:fontsize=32:fontcolor=white:box=1:boxcolor=black@0.5"     -flags low_delay -probesize 32 -sync ext
+```
+Point the camera at the sceen and take a screenshot.
+Subtract second timestamp from first = total latency.
+
 ---
 
 ## Technical Details
