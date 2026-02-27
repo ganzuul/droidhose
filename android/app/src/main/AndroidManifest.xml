@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.droidhose">
+
+    <!-- Camera access for raw YUV frame capture -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- TCP socket for ADB-forwarded stream -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="true" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <application
+        android:label="droidhose"
+        android:hasCode="false">
+
+        <!--
+            Pure NativeActivity: the entire app lives in libdroidhose.so.
+            Grant CAMERA permission via adb before first launch:
+                adb shell pm grant com.droidhose android.permission.CAMERA
+        -->
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize">
+
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="droidhose" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
